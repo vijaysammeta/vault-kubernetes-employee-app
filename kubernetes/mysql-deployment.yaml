@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: production
+  labels:
+    app: mysql
+spec:
+  clusterIP: None
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: production
+spec:
+  serviceName: mysql
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: mysql
+
+  template:
+    metadata:
+      labels:
+        app: mysql
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "mysql-app"
+
+        vault.hashicorp.com/agent-inject-secret-db-user: "secret/data/mysql"
+        vault.hashicorp.com/agent-inject-template-db-user: |
+          {{- with secret "secret/data/mysql" -}}
+          {{ .Data.data.username }}
+          {{- end }}
+
+        vault.hashicorp.com/agent-inject-secret-db-password: "secret/data/mysql"
+        vault.hashicorp.com/agent-inject-template-db-password: |
+          {{- with secret "secret/data/mysql" -}}
+          {{ .Data.data.password }}
+          {{- end }}
+
+    spec:
+      serviceAccountName: mysql-app
+
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 3306
+              name: mysql
+
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-root
+                  key: MYSQL_ROOT_PASSWORD
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for Vault secrets..."
+
+              while [ ! -s /vault/secrets/db-user ] || [ ! -s /vault/secrets/db-password ]; do
+                sleep 2
+              done
+
+              export MYSQL_USER="$(cat /vault/secrets/db-user)"
+              export MYSQL_PASSWORD="$(cat /vault/secrets/db-password)"
+              export MYSQL_DATABASE="company"
+
+              echo "Vault secrets loaded successfully."
+
+              exec docker-entrypoint.sh mysqld
+
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: kops-csi-1-21
+        resources:
+          requests:
+            storage: 10Gi
