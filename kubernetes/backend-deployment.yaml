@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: production
+  labels:
+    app: backend
+
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: backend
+
+  template:
+    metadata:
+      labels:
+        app: backend
+
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "mysql-app"
+
+        vault.hashicorp.com/agent-inject-secret-db-user: "secret/data/mysql"
+        vault.hashicorp.com/agent-inject-template-db-user: |
+          {{- with secret "secret/data/mysql" -}}
+          {{ .Data.data.username }}
+          {{- end }}
+
+        vault.hashicorp.com/agent-inject-secret-db-password: "secret/data/mysql"
+        vault.hashicorp.com/agent-inject-template-db-password: |
+          {{- with secret "secret/data/mysql" -}}
+          {{ .Data.data.password }}
+          {{- end }}
+
+    spec:
+      serviceAccountName: mysql-app
+
+      containers:
+        - name: backend
+          image: vijaysammeta/backend:v4
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 3000
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for Vault secrets..."
+
+              while [ ! -s /vault/secrets/db-user ] || [ ! -s /vault/secrets/db-password ]; do
+                sleep 2
+              done
+
+              export DB_HOST="mysql"
+              export DB_PORT="3306"
+              export DB_USER="$(cat /vault/secrets/db-user)"
+              export DB_PASSWORD="$(cat /vault/secrets/db-password)"
+              export DB_NAME="company"
+
+              echo "Vault secrets loaded successfully."
+
+              exec node server.js
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: production
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: backend
+
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
